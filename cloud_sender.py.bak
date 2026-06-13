@@ -1,0 +1,78 @@
+import time
+import math
+import requests
+import IMU
+from gps import gps, WATCH_ENABLE, WATCH_NEWSTYLE
+
+# 1. CLOUD SERVER CONNECTIVITY CONFIGURATION
+AWS_IP = "mypiprojects.com"
+CLOUD_URL = f"http://{AWS_IP}:8060/api/telemetry"
+SECRET_API_TOKEN = "my_private_pi_upload_token_99"
+
+# 2. INITIALIZE HARDWARE INTERFACES
+IMU.detectIMU()
+IMU.initIMU()
+gps_client = gps(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
+
+# CRITICAL FIX: Persistent variables moved OUTSIDE the loop
+# This prevents the Pi from blanking out data between asynchronous GPS sentences
+satellites_locked = 0
+lat, lon = 43.54, -96.67
+speed_mph = 0.0
+
+print(f"Cloud Telemetry Sender Active! Broadcasting to {CLOUD_URL}...")
+
+while True:
+    # Read navigation packets from gpsd buffer safely
+    if gps_client.waiting(timeout=0.02):
+        try:
+            gps_client.next()
+            
+            # Extract satellite details ONLY if new SKY data exists
+            if 'satellites' in gps_client.data:
+                sats_list = gps_client.data.get('satellites', [])
+                satellites_locked = len([s for s in sats_list if s.get('used', False)])
+
+            # Extract coordinates ONLY if a valid fix mode is reported
+            if hasattr(gps_client, 'fix') and getattr(gps_client.fix, 'mode', 0) >= 2:
+                get_lat = getattr(gps_client.fix, 'latitude', 0)
+                get_lon = getattr(gps_client.fix, 'longitude', 0)
+                get_speed = getattr(gps_client.fix, 'speed', 0)
+
+                if not math.isnan(get_lat) and not math.isnan(get_lon) and get_lat != 0:
+                    lat = get_lat
+                    lon = get_lon
+                if not math.isnan(get_speed):
+                    raw_speed_mph = get_speed * 2.23694
+                    speed_mph = raw_speed_mph if raw_speed_mph >= 3.0 else 0.0
+        except (StopIteration, Exception):
+            pass
+
+    # Extract IMU structural metrics
+    ACCx = IMU.readACCx()
+    ACCy = IMU.readACCy()
+    
+    g_force_y = (ACCy * 0.000244) - 0.07 
+    g_force_x = ACCx * 0.000244
+
+    if abs(g_force_y) < 0.03: g_force_y = 0.0
+    if abs(g_force_x) < 0.03: g_force_x = 0.0
+
+    # 3. CONSTRUCT TRANSMISSION PAYLOAD
+    payload = {
+        "api_key": SECRET_API_TOKEN,
+        "speed": speed_mph,
+        "lat": lat,
+        "lon": lon,
+        "sats": satellites_locked,
+        "g_long": g_force_y,
+        "g_lat": g_force_x
+    }
+
+    # 4. STREAM DATA TO THE AWS CLOUD INSTANCE
+    try:
+        requests.post(CLOUD_URL, json=payload, timeout=0.1)
+    except Exception:
+        pass 
+
+    time.sleep(0.2) # Maintain standard 5Hz logging rate

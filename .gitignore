@@ -1,0 +1,10 @@
+# Ignore wardriving logs and GPS captures
+*.csv
+*.pcap
+*.kml
+*.gpx
+*.log
+
+# Ignore configuration files with secret tokens
+*.env
+secrets.json

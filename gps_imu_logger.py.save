@@ -1,0 +1,82 @@
+import time
+import sys
+import os
+import csv
+f
+rom gps import gps, WATCH_ENABLE, WATCH_NEWSTYLE
+
+# Import OzzMaker's bundled hardware helper module
+import IMU
+
+# Setup CSV Logging file
+LOG_FILE = "telemetry_log.csv"
+file_exists = os.path.isfile(LOG_FILE)
+
+# Initialize the CSV file headers if it doesn't exist
+with open(LOG_FILE, mode='a', newline='') as f:
+    writer = csv.writer(f)
+    if not file_exists:
+        writer.writerow(["Timestamp", "Latitude", "Longitude", "GPS_Time", "Acc_X_Angle", "Acc_Y_Angle"])
+
+# Initialize OzzMaker IMU hardware sensors
+IMU.detectIMU()
+if IMU.BerryIMUversion == 99:
+    print("Error: No BerryIMU hardware detected... exiting.")
+    sys.exit()
+IMU.initIMU()
+
+# Initialize the Local network GPS stream client
+try:
+    gps_client = gps(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
+except Exception as e:
+    print(f"Error: Could not connect to gpsd background socket: {e}")
+    print("Ensure 'sudo gpsd /dev/ttyS0 -F /var/run/gpsd.sock' is running.")
+    sys.exit()
+
+print(f"Telemetry logging started! Writing data live to: {LOG_FILE}")
+print("Press Ctrl+C to stop logging.\n")
+
+try:
+    while True:
+        # 1. Read the latest background network packet from GPSD
+        gps_client.next()
+
+        lat = "Searching..."
+        lon = "Searching..."
+        gps_time = "N/A"
+
+        # Check if GPS has a telemetry fixture lock (TPV block)
+        if hasattr(gps_client, 'fix') and gps_client.fix.mode >= 2:
+            lat = getattr(gps_client.fix, 'latitude', "Searching...")
+            lon = getattr(gps_client.fix, 'longitude', "Searching...")
+            gps_time = getattr(gps_client, 'utc', "N/A")
+
+        # 2. Read the raw I2C Accelerometer values from the board
+        ACCx = IMU.readACCx()
+        ACCy = IMU.readACCy()
+        ACCz = IMU.readACCz()
+
+        # Convert raw acceleration vectors into tilt angles (degrees)
+        acc_x_angle = (IMU.math.atan2(ACCy, ACCz) * 180) / IMU.math.pi
+        acc_y_angle = (IMU.math.atan2(ACCz, ACCx) * 180) / IMU.math.pi
+
+        # Normalize structural offsets to keep values clean
+        if acc_y_angle > 90:
+            acc_y_angle -= 270
+        else:
+            acc_y_angle += 90
+
+        # 3. Print out a scannable live view to the screen
+        current_time = time.strftime("%H:%M:%S")
+        print(f"[{current_time}] GPS: {lat}, {lon} | IMU Tilt: X={acc_x_angle:.2f}°, Y={acc_y_angle:.2f}°")
+
+        # 4. Save everything to the CSV log file sequentially
+        with open(LOG_FILE, mode='a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([time.time(), lat, lon, gps_time, f"{acc_x_angle:.2f}", f"{acc_y_angle:.2f}"])
+
+        # Delay loop slightly to manage CPU overhead (reads at 5Hz)
+        time.sleep(0.2)
+
+except KeyboardInterrupt:
+    print("\nLogging stopped successfully.")
