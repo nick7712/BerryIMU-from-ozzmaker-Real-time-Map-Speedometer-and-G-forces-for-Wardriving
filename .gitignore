@@ -8,3 +8,5 @@
 # Ignore configuration files with secret tokens
 *.env
 secrets.json
+env/
+__pycache__/
